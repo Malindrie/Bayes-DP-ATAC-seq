@@ -1,60 +1,68 @@
+library(Seurat)
+library(Signac)
+set.seed(1234)
+
+load("RObjects/Basal/regions/promoter_peaks/TAC_1_atac_exprs.rds")
+
+# Normalize data
+TAC_1_atac_norm <- apply(TAC_1_atac_exprs, 2, function(x)
+  log1p((x / sum(x))*10000))
+
+# Scale data
+TAC_1_atac_norm <- scale(TAC_1_atac_norm)
+
+gexpr <- TAC_1_atac_norm
+
+
 #fiting Bayesian non-parametric mixture models
 library(dirichletprocess)
 
-Likelihood.poisson <- function(mdobj, x, theta){
-  return(as.numeric(dpois(x, theta[[1]])))
-}
-
-
-PriorDraw.poisson <- function(mdobj, n){
-  draws <- rgamma(n, mdobj$priorParameters[1], mdobj$priorParameters[2])
-  theta <- list(array(draws, dim=c(1,1,n)))
-  return(theta)
-}
-
-
-PosteriorDraw.poisson <- function(mdobj, x, n=1){
-  priorParameters <- mdobj$priorParameters
-  lambda <- rgamma(n, priorParameters[1] + sum(x), priorParameters[2] + nrow(x))
-  return(list(array(lambda, dim=c(1,1,n))))
-}
-
-
-Predictive.poisson <- function(mdobj, x){
-  priorParameters <- mdobj$priorParameters
-  pred <- numeric(length(x))
-  for(i in seq_along(x)){
-    alphaPost <- priorParameters[1] + x[i]
-    betaPost <- priorParameters[2] + 1
-    pred[i] <- (priorParameters[2] ^ priorParameters[1]) / gamma(priorParameters[1])
-    pred[i] <- pred[i] * gamma(alphaPost) / (betaPost^alphaPost)
-    pred[i] <- pred[i] * (1 / prod(factorial(x[i])))
-  }
-  return(pred)
-}
-
-
-poisMd <- MixingDistribution(distribution="poisson",
-                             priorParameters = c(1, 1),
-                             conjugate="conjugate")
-
-
-Dirichlet_Poisson <- function(y, poisMd){
+Dirichlet_Normal <- function(y){
   
-  dp <- dirichletprocess::DirichletProcessCreate(y, poisMd)
-  dp <- dirichletprocess::Initialise(dp)
-  dp <- dirichletprocess::Fit(dp, 1000)
+  dp <- dirichletprocess:: DirichletProcessGaussian(y)
+  dp <- dirichletprocess::Fit(dp, 1000, progressBar = FALSE)
+  burned_dp <- Burn(dp, 100)
   
-  return(dp)
+  return(burned_dp)
 }
 
 
-# running dirichletprocess changing intnumclusters
+DP_KNN_10000 <- apply(gexpr, 1, FUN = Dirichlet_Normal)
+save(DP_KNN_10000, file="./RObjects/Basal/KNN/DP_KNN_10000.rds")
+
+
+# # with parallelization
+# library(future.apply)
+# plan(multisession, workers = 12)
+# 
+# DP_KNN <- future_apply(gexpr, MARGIN = 1L, FUN = Dirichlet_Normal, future.seed = 0xBEEF)
+
+####################################################
+# Running Dirichlet process changing the initial number of clusters
+require(dirichletprocess)
+require(ggplot2)
+require(dplyr)
+require(tidyr)
+library(Seurat)
+
 set.seed(110010101)
 
-Dirichlet_Poisson_2 <- function(y, poisMd){
+load("RObjects/Basal/KNN/TAC_1_atac_exprs.rds")
+
+TAC_1_atac_norm <- apply(TAC_1_atac_exprs, 2, function(x)
+  log1p((x / sum(x))*10000))
+
+TAC_1_atac_norm <- scale(TAC_1_atac_norm)
+
+gexpr <- TAC_1_atac_norm
+
+
+#fiting Bayesian non-parametric mixture models
+library(dirichletprocess)
+
+Dirichlet_Normal <- function(y){
   
-  dp <- dirichletprocess::DirichletProcessCreate(y, poisMd)
+  dp <- dirichletprocess::DirichletProcessGaussian(y)
   dp <- dirichletprocess::Initialise(dp, numInitialClusters = length(y))
   dp <- dirichletprocess::Fit(dp, 1000)
   
@@ -62,27 +70,37 @@ Dirichlet_Poisson_2 <- function(y, poisMd){
 }
 
 
-# dirichletprocess diagnostics
+DP_KNN_all_10000 <- apply(gexpr, 1, FUN = Dirichlet_Normal)
+save(DP_KNN_all_10000, file="./RObjects/Basal/KNN/DP_KNN_all_10000.rds")
+
+
+# conduct Gelman and Rubin diagnostic
+
 require(coda)
 
 Gelman_diag <- NULL
 
-for (i in 1:length(DP_var_5000)){
+for (i in 1:length(DP_KNN_10000)){
   
-  numClusters <- vapply(DP_var_5000[[i]]$weightsChain, function(x) length(x), numeric(1))
-  numClusters2 <- vapply(DP_var_all5000_2[[i]]$weightsChain, function(x) length(x), numeric(1))
+  numClusters <- vapply(DP_KNN_10000[[i]]$weightsChain, function(x) length(x), numeric(1))
+  numClusters2 <- vapply(DP_KNN_all_10000[[i]]$weightsChain, function(x) length(x), numeric(1))
   
-  chains <- mcmc.list(mcmc(cbind(Alpha = DP_var_5000[[i]]$alphaChain, 
+  chains <- mcmc.list(mcmc(cbind(Alpha = DP_KNN_10000[[i]]$alphaChain, 
                                  NumClusters = numClusters, 
-                                 Likelihood = DP_var_5000[[i]]$likelihoodChain)),
-                      mcmc(cbind(Alpha= DP_var_all5000_2[[i]]$alphaChain, 
+                                 Likelihood = DP_KNN_10000[[i]]$likelihoodChain)),
+                      mcmc(cbind(Alpha= DP_KNN_all_10000[[i]]$alphaChain, 
                                  NumClusters = numClusters2,
-                                 Likelihood = DP_var_all5000_2[[i]]$likelihoodChain)))
+                                 Likelihood = DP_KNN_all_10000[[i]]$likelihoodChain)))
   
   Gelman_diag[i] <- gelman.diag(chains)[[2]]
   
 }
 
-Gelman_mpsrf <- data.frame(mpsrf=Gelman_diag, row.names = names(DP_var_5000))
+Gelman_mpsrf <- data.frame(mpsrf=Gelman_diag, row.names = names(DP_KNN_10000))
+
+save(Gelman_mpsrf, file="./RObjects/aggre/Gelman_mpsrf.rds")
 
 
+# select regions with Gelman_mpsrf < 1.1
+Gelman_mpsrf <- as.matrix(Gelman_mpsrf)
+selec_regions <- as.matrix(Gelman_mpsrf[Gelman_mpsrf < 1.1,])
