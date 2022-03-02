@@ -60,7 +60,7 @@ gexpr <- TAC_1_atac_norm
 #fiting Bayesian non-parametric mixture models
 library(dirichletprocess)
 
-Dirichlet_Normal <- function(y){
+Dirichlet_Normal_int <- function(y){
   
   dp <- dirichletprocess::DirichletProcessGaussian(y)
   dp <- dirichletprocess::Initialise(dp, numInitialClusters = length(y))
@@ -70,7 +70,7 @@ Dirichlet_Normal <- function(y){
 }
 
 
-DP_KNN_all_10000 <- apply(gexpr, 1, FUN = Dirichlet_Normal)
+DP_KNN_all_10000 <- apply(gexpr, 1, FUN = Dirichlet_Normal_int)
 save(DP_KNN_all_10000, file="./RObjects/Basal/KNN/DP_KNN_all_10000.rds")
 
 
